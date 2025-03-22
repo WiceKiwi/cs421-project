@@ -85,12 +85,44 @@ def aggregate_features(df):
     sequence_features["rating_changes_pct"] = sequence_features["rating_changes_count"] / (
         user_features.set_index("user")["review_count"] - 1 + EPS
     ).reindex(sequence_features["user"]).values
+
+    # ================= ADDITIONAL FEATURES =================
+    # Z-score: (user_rating - movie_mean) / movie_std
+    movie_stats = df.groupby("item")["rating"].agg(["mean", "std"]).reset_index().rename(columns={"mean": "m_mean", "std": "m_std"})
+    df = df.merge(movie_stats, on="item", how="left")
+    df["z_rating"] = (df["rating"] - df["m_mean"]) / (df["m_std"] + EPS)
+
+    z_stats = df.groupby("user")["z_rating"].agg(["mean", "std", "max", "min", "median", "skew"]).reset_index()
+    z_stats.columns = ["user"] + [f"z_rating_{stat}" for stat in z_stats.columns if stat != "user"]
+
+    df = df.merge(movie_popularity, on="item", how="left")
+    pop_threshold = movie_popularity["movie_popularity"].quantile(0.75)
+    rare_threshold = movie_popularity["movie_popularity"].quantile(0.25)
+
+    df["likes_popular"] = ((df["movie_popularity"] > pop_threshold) & (df["rating"] == 10)).astype(int)
+    df["likes_rare"] = ((df["movie_popularity"] < rare_threshold) & (df["rating"] == 10)).astype(int)
+
+    pop_bias = df.groupby("user")[["likes_popular", "likes_rare"]].mean().reset_index()
+
+    def interaction_entropy(x):
+        probs = x.value_counts(normalize=True)
+        return entropy(probs)
+
+    interaction_ent = df.groupby("user")[["item", "rating"]].apply(lambda g: interaction_entropy(g["item"].astype(str) + "_" + g["rating"].astype(str))).reset_index(name="interaction_entropy")
+
+
+    # ================= END OF ADDITIONAL FEATURES =================
     
     # --- COMBINING FEATURES ---
     all_features = user_features.merge(pop_features, on="user", how="left")
     all_features = all_features.merge(unique_items, on="user", how="left")
     all_features = all_features.merge(deviation_features, on="user", how="left")
     all_features = all_features.merge(sequence_features, on="user", how="left")
+    # ================= ADDITIONAL FEATURES =================
+    all_features = all_features.merge(z_stats, on="user", how="left")
+    all_features = all_features.merge(pop_bias, on="user", how="left")
+    all_features = all_features.merge(interaction_ent, on="user", how="left")
+    # ================= END OF ADDITIONAL FEATURES =================
     all_features = all_features.fillna(0)
     
     # --- ADVANCED INTERACTION FEATURES ---
