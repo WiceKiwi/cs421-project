@@ -1,0 +1,3 @@
+*.py text=auto
+*.ipynb text=auto
+*.ipynb text eol=lf
