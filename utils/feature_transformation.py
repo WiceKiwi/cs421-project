@@ -159,5 +159,28 @@ def aggregate_features(df):
     gap_stats = df_sorted.groupby("user")["item_diff"].agg(["mean", "std", "max"]).reset_index()
     gap_stats.columns = ["user", "gap_mean", "gap_std", "gap_max"]
     all_features = all_features.merge(gap_stats, on="user", how="left")
-    
+
+    # Global movie popularity percentiles
+    movie_popularity = df["item"].value_counts(normalize=True)
+    movie_percentile = movie_popularity.rank(pct=True)
+
+    # Map item → percentile, then compute user-level summary
+    df["movie_pop_percentile"] = df["item"].map(movie_percentile)
+    pop_diff = df.groupby("user")["movie_pop_percentile"].agg(["mean", "std"]).reset_index()
+    pop_diff.columns = ["user", "user_pop_percentile_mean", "user_pop_percentile_std"]
+    all_features = all_features.merge(pop_diff, on="user", how="left")
+
+    rating_distr = df.pivot_table(index="user", columns="rating", aggfunc="size", fill_value=0)
+    rating_distr = rating_distr.div(rating_distr.sum(axis=1), axis=0).reset_index()
+    rating_distr.columns = ["user"] + [f"rating_pct_{int(col)}" for col in rating_distr.columns if col != "user"]
+    all_features = all_features.merge(rating_distr, on="user", how="left")
+
+        # ===== SHAP-Based Composite Features =====
+    df["rare_like"] = ((df["is_rare_movie"] == 1) & (df["rating"] == 10)).astype(int)
+    rare_like_ratio = (
+        df.groupby("user")["rare_like"].sum() /
+        (df.groupby("user")["is_rare_movie"].sum() + EPS)
+    ).reset_index(name="rare_like_ratio")
+    all_features = all_features.merge(rare_like_ratio, on="user", how="left")
+
     return all_features
