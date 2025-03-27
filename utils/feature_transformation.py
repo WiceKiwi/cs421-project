@@ -1,6 +1,6 @@
 import numpy as np
 import pandas as pd
-from scipy.stats import entropy
+from scipy.stats import entropy, skew
 
 EPS = 1e-6
 
@@ -42,7 +42,7 @@ def aggregate_features(df):
     # Rare movie stats
     movie_pop = df['item'].value_counts().reset_index()
     movie_pop.columns = ['item', 'popularity']
-    threshold = movie_pop['popularity'].quantile(0.1)
+    threshold = movie_pop['popularity'].quantile(0.05)
     rare_movies = movie_pop[movie_pop['popularity'] <= threshold]['item'].values
     df['is_rare_movie'] = df['item'].isin(rare_movies).astype(int)
     rare_stats = df.groupby('user')['is_rare_movie'].mean().reset_index(name='rare_movies_watched_pct')
@@ -96,13 +96,32 @@ def aggregate_features(df):
     z_stats.columns = ["user"] + [f"z_rating_{stat}" for stat in z_stats.columns if stat != "user"]
 
     df = df.merge(movie_popularity, on="item", how="left")
+
+    # Define popularity thresholds
     pop_threshold = movie_popularity["movie_popularity"].quantile(0.75)
     rare_threshold = movie_popularity["movie_popularity"].quantile(0.25)
 
+    # === LIKE / DISLIKE / NEUTRAL / UNKNOWN BIAS TOWARD POPULAR / RARE MOVIES ===
     df["likes_popular"] = ((df["movie_popularity"] > pop_threshold) & (df["rating"] == 10)).astype(int)
     df["likes_rare"] = ((df["movie_popularity"] < rare_threshold) & (df["rating"] == 10)).astype(int)
 
-    pop_bias = df.groupby("user")[["likes_popular", "likes_rare"]].mean().reset_index()
+    df["dislikes_popular"] = ((df["movie_popularity"] > pop_threshold) & (df["rating"] == -10)).astype(int)
+    df["dislikes_rare"] = ((df["movie_popularity"] < rare_threshold) & (df["rating"] == -10)).astype(int)
+
+    df["neutral_popular"] = ((df["movie_popularity"] > pop_threshold) & (df["rating"] == 0)).astype(int)
+    df["neutral_rare"] = ((df["movie_popularity"] < rare_threshold) & (df["rating"] == 0)).astype(int)
+
+    df["unknown_popular"] = ((df["movie_popularity"] > pop_threshold) & (df["rating"] == 1)).astype(int)
+    df["unknown_rare"] = ((df["movie_popularity"] < rare_threshold) & (df["rating"] == 1)).astype(int)
+
+    # Aggregate per user
+    pop_bias = df.groupby("user")[[
+        "likes_popular", "likes_rare",
+        "dislikes_popular", "dislikes_rare",
+        "neutral_popular", "neutral_rare",
+        "unknown_popular", "unknown_rare"
+    ]].mean().reset_index()
+
 
     def interaction_entropy(x):
         probs = x.value_counts(normalize=True)
@@ -175,12 +194,49 @@ def aggregate_features(df):
     rating_distr.columns = ["user"] + [f"rating_pct_{int(col)}" for col in rating_distr.columns if col != "user"]
     all_features = all_features.merge(rating_distr, on="user", how="left")
 
-        # ===== SHAP-Based Composite Features =====
-    df["rare_like"] = ((df["is_rare_movie"] == 1) & (df["rating"] == 10)).astype(int)
-    rare_like_ratio = (
-        df.groupby("user")["rare_like"].sum() /
-        (df.groupby("user")["is_rare_movie"].sum() + EPS)
-    ).reset_index(name="rare_like_ratio")
-    all_features = all_features.merge(rare_like_ratio, on="user", how="left")
+        # === ADDITIONAL MOVIE-RELATED AGGREGATES (USER LEVEL) ===
+    # Merge movie popularity stats if not already present
+    movie_stats = df.groupby("item").agg(
+        item_rating_mean=("rating", "mean"),
+        item_rating_std=("rating", "std"),
+        item_rating_median=("rating", "median"),
+        item_rating_skew=("rating", lambda x: skew(x.dropna())),
+        item_review_count=("rating", "count")
+    ).reset_index()
+    
+    df = df.merge(movie_stats, on="item", how="left")
+
+    # Aggregate those stats at user level
+    user_movie_agg = df.groupby("user").agg(
+        mean_item_rating_mean=("item_rating_mean", "mean"),
+        std_item_rating_mean=("item_rating_mean", "std"),
+        mean_item_rating_std=("item_rating_std", "mean"),
+        mean_item_rating_median=("item_rating_median", "mean"),
+        mean_item_rating_skew=("item_rating_skew", "mean"),
+        mean_item_review_count=("item_review_count", "mean"),
+        max_item_review_count=("item_review_count", "max"),
+        min_item_review_count=("item_review_count", "min"),
+    ).reset_index()
+
+    all_features = all_features.merge(user_movie_agg, on="user", how="left")
+
+    # Feature: user tends to rate high-rated movies or low-rated ones
+    all_features["item_mean_vs_user_avg"] = all_features["mean_item_rating_mean"] - all_features["avg_rating"]
+    all_features["item_skew_bias"] = all_features["mean_item_rating_skew"]
+
+    # Feature: normalized movie popularity preference
+    all_features["normalized_movie_popularity"] = all_features["avg_movie_popularity"] / (all_features["mean_item_review_count"] + EPS)
+
+    # # Add: Popularity skew (difference between max and min movie popularity)
+    all_features["popularity_skew"] = all_features["max_movie_popularity"] - all_features["min_movie_popularity"]
+    
+    # # Add: Rating polarity (like_pct minus dislike_pct)
+    all_features["rating_polarity"] = all_features["like_pct"] - all_features["dislike_pct"]
+    
+    # # Add: Activity-weighted skew (how much skew increases with more activity)
+    all_features["activity_weighted_skew"] = all_features["z_rating_skew"] * np.log1p(all_features["review_count"])
+    
+    # # Add: Switch rate per review
+    all_features["switch_pct"] = all_features["change_direction_count"] / (all_features["review_count"] + EPS)
 
     return all_features
