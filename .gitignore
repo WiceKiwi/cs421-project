@@ -1,4 +1,4 @@
 *.pkl
 *.json
 *__pycache__
-*_local.ipynb
+*_local*.ipynb
