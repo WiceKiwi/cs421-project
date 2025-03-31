@@ -250,5 +250,4 @@ def aggregate_features(df):
     rating_mode["dominance_ratio"] = rating_mode["dominant_rating_count"] / (rating_mode["total_rating_count"] + EPS)
 
     all_features = all_features.merge(rating_mode[["user", "dominant_rating", "dominance_ratio"]], on="user", how="left")
-
     return all_features
