@@ -200,7 +200,7 @@ def aggregate_features(df):
         item_rating_mean=("rating", "mean"),
         item_rating_std=("rating", "std"),
         item_rating_median=("rating", "median"),
-        item_rating_skew=("rating", lambda x: skew(x.dropna())),
+        item_rating_skew=("rating", lambda x: skew(x.dropna()) if x.dropna().std() > 1e-6 else 0),
         item_review_count=("rating", "count")
     ).reset_index()
     
@@ -226,17 +226,29 @@ def aggregate_features(df):
 
     # Feature: normalized movie popularity preference
     all_features["normalized_movie_popularity"] = all_features["avg_movie_popularity"] / (all_features["mean_item_review_count"] + EPS)
-
     # # Add: Popularity skew (difference between max and min movie popularity)
     all_features["popularity_skew"] = all_features["max_movie_popularity"] - all_features["min_movie_popularity"]
-    
     # # Add: Rating polarity (like_pct minus dislike_pct)
     all_features["rating_polarity"] = all_features["like_pct"] - all_features["dislike_pct"]
-    
     # # Add: Activity-weighted skew (how much skew increases with more activity)
     all_features["activity_weighted_skew"] = all_features["z_rating_skew"] * np.log1p(all_features["review_count"])
-    
     # # Add: Switch rate per review
     all_features["switch_pct"] = all_features["change_direction_count"] / (all_features["review_count"] + EPS)
+
+    # WEEK 12 ADDITION
+    
+    dominant_rating = df.groupby(["user", "rating"]).size().reset_index(name="count")
+    dominant_rating = dominant_rating.sort_values(["user", "count"], ascending=[True, False])
+    dominant_rating = dominant_rating.drop_duplicates("user")
+
+    rating_mode = dominant_rating[["user", "rating"]].rename(columns={"rating": "dominant_rating"})
+    rating_mode_count = dominant_rating[["user", "count"]].rename(columns={"count": "dominant_rating_count"})
+
+    rating_total = df.groupby("user").size().reset_index(name="total_rating_count")
+    rating_mode = rating_mode.merge(rating_mode_count, on="user")
+    rating_mode = rating_mode.merge(rating_total, on="user")
+    rating_mode["dominance_ratio"] = rating_mode["dominant_rating_count"] / (rating_mode["total_rating_count"] + EPS)
+
+    all_features = all_features.merge(rating_mode[["user", "dominant_rating", "dominance_ratio"]], on="user", how="left")
 
     return all_features
