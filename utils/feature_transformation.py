@@ -226,6 +226,26 @@ def aggregate_features(df):
 
     all_features = all_features.merge(rating_mode[["user", "dominant_rating", "dominance_ratio"]], on="user", how="left")
 
+
+    highly_rated_movies = movie_stats[movie_stats["item_rating_mean"] >= movie_stats["item_rating_mean"].quantile(0.95)]["item"]
+    df["interacts_highly_rated"] = df["item"].isin(highly_rated_movies).astype(int)
+    highly_rated_interactions = df.groupby("user")["interacts_highly_rated"].agg(
+        highly_rated_movie_count="sum"
+    ).reset_index()
+    highly_rated_interactions["highly_rated_movie_pct"] = highly_rated_interactions["highly_rated_movie_count"] / (
+        df.groupby("user").size() + EPS
+    ).values
+
+    all_features = all_features.merge(highly_rated_interactions, on="user", how="left")
+
+        # ================= CONTRARIAN LOWLY-RATED MOVIE BEHAVIOR =================
+    lowly_rated_movies = movie_stats[movie_stats["item_rating_mean"] <= movie_stats["item_rating_mean"].quantile(0.10)]["item"]
+
+    df["lowly_rated_movie_like"] = ((df["item"].isin(lowly_rated_movies)) & (df["rating"] >= 5)).astype(int)
+
+    contrarian_low_likes = df.groupby("user")["lowly_rated_movie_like"].mean().reset_index(name="contrarian_lowly_rated_like_pct")
+    all_features = all_features.merge(contrarian_low_likes, on="user", how="left")
+
     # ================= HANDLE MISSING VALUES =================
     safe_cols = [col for col in all_features.columns if "count" in col or "pct" in col or col.startswith("is_") or col.endswith("_flag")]
     all_features[safe_cols] = all_features[safe_cols].fillna(0)
